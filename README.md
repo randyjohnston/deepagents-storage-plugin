@@ -7,7 +7,7 @@ pluggable blob store, and LangGraph state keeps only a ~230-byte
 content-addressed pointer stub — so checkpoints and traces stay small while the
 agent's `write_file` / `read_file` / `edit_file` tools keep working unchanged.
 
-## Provider seam
+## Provider contract
 
 `BlobStore` (`deepagents_blob/stores/protocol.py`) is a minimal key/value
 contract plus `BlobCapabilities` flags — deliberately *not* S3-shaped, so
@@ -78,4 +78,5 @@ so use a higher threshold).
   `exists()`. Trade-off: precise deletion is impossible, so GC is a bucket
   lifecycle/TTL policy (or a periodic prefix sweep on providers without
   server-side lifecycle). `delete()` removes only the stub.
-- **Read amplification** is softened by a small in-process LRU keyed by sha256.
+- **Read amplification** is softened by a small in-process LRU keyed by sha256
+  (due to read expensive Box/Egnyte-style stores without range reads).
