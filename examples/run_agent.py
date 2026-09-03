@@ -1,9 +1,17 @@
 """Running example: a deep agent whose large files transparently offload.
 
-The agent gets a tool that returns a ~500KB dataset. It saves the data with
-its normal ``write_file`` tool — ``OffloadingBackend`` intercepts the write,
-ships the bytes to the blob store, and leaves a ~230-byte pointer stub in
-LangGraph state. ``read_file``/``edit_file`` dereference transparently.
+The agent gets a tool that builds a ~240KB dataset and writes it through the
+backend. ``OffloadingBackend`` intercepts the write, ships the bytes to the
+blob store, and leaves a ~230-byte pointer stub in LangGraph state. The model
+then reads small windows of that file; ``read_file``/``edit_file`` dereference
+the stub transparently.
+
+The dataset never enters the conversation. Do not ask the model to copy a
+large tool result into ``write_file`` itself: deepagents already evicts any
+oversized tool result to ``/large_tool_results/<tool_call_id>``, so the model
+would have to page the whole file back in and re-emit it as one tool argument
+— tens of thousands of output tokens, many minutes, and usually a truncated
+write. Tools that produce bulk data must write it through the backend.
 
 Usage::
 
@@ -21,6 +29,7 @@ Usage::
 
 import os
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -67,15 +76,36 @@ def make_store():
     return InMemoryBlobStore()
 
 
-def fetch_sales_data() -> str:
-    """Download the complete raw sales dataset as CSV text. Large."""
+def build_sales_csv() -> str:
+    """A ~240KB CSV: one row per store per day, 10080 data rows."""
     rows = [
-        f"2026-{m:02d}-{d:02d},store-{d % 5},{(m * d * 7919) % 997}"
+        f"2026-{m:02d}-{d:02d},store-{s:02d},{(m * d * s * 7919) % 997}"
         for m in range(1, 13)
         for d in range(1, 29)
-        for _ in range(30)
+        for s in range(1, 31)
     ]
-    return "date,store,revenue\n" + "\n".join(rows)
+    return "date,store,revenue\n" + "\n".join(rows) + "\n"
+
+
+def make_fetch_tool(backend: OffloadingBackend):
+    """The tool writes through the backend, so the bytes go state -> blob store
+    without ever passing through the model's context."""
+
+    def fetch_sales_data(file_path: str) -> str:
+        """Download the raw sales dataset and save it in the agent filesystem
+        at file_path. Returns a one-line summary, not the data itself."""
+        csv = build_sales_csv()
+        result = backend.write(file_path, csv)
+        if result.error:
+            return f"Save failed: {result.error}"
+        row_count = csv.count("\n") - 1  # minus the header
+        return (
+            f"Saved {len(csv.encode()):,} bytes to {file_path}: "
+            f"a header line plus {row_count:,} data rows, columns date,store,revenue. "
+            "Read small windows with read_file; do not read the whole file."
+        )
+
+    return fetch_sales_data
 
 
 def pick_threshold() -> int:
@@ -99,6 +129,27 @@ def pick_model() -> str | None:
     return None
 
 
+def run_and_trace(agent, prompt: str) -> dict:
+    """Stream the run so each step is visible. ``agent.invoke`` prints nothing
+    until the whole run ends, which makes a slow run look like a hang."""
+    seen = 0
+    state: dict = {}
+    started = time.monotonic()
+    for state in agent.stream({"messages": [{"role": "user", "content": prompt}]}, stream_mode="values"):
+        for msg in state["messages"][seen:]:
+            stamp = f"[{time.monotonic() - started:6.1f}s]"
+            if msg.type == "ai":
+                for call in getattr(msg, "tool_calls", []):
+                    args = {k: (v[:60] + "…" if isinstance(v, str) and len(v) > 60 else v) for k, v in call["args"].items()}
+                    print(f"{stamp} call  {call['name']} {args}")
+                if msg.text:
+                    print(f"{stamp} say   {msg.text[:200]}")
+            elif msg.type == "tool":
+                print(f"{stamp} ->    {str(msg.content)[:120].replace(chr(10), ' ')}")
+        seen = len(state["messages"])
+    return state
+
+
 def main() -> int:
     model = pick_model()
     if model is None:
@@ -107,26 +158,31 @@ def main() -> int:
         return 1
 
     store = make_store()
-    backend = OffloadingBackend(StateBackend(), store, threshold=pick_threshold())
+    threshold = pick_threshold()
+    backend = OffloadingBackend(StateBackend(), store, threshold=threshold)
 
     agent = create_deep_agent(
         model=model,
-        tools=[fetch_sales_data],
+        tools=[make_fetch_tool(backend)],
         backend=backend,
         # Required for any decorator backend: registers the `files` channel
         # (deepagents' _uses_state_backend only recognizes StateBackend /
         # CompositeBackend, not wrappers around them).
         state_schema=FilesystemState,
         system_prompt=(
-            "You are a data analyst. When asked about the sales data, first call "
-            "fetch_sales_data and save the raw output to /data/sales.csv with "
-            "write_file, then answer from the file."
+            "You are a data analyst working on a large CSV.\n"
+            "- Call fetch_sales_data with file_path='/data/sales.csv'. It saves the "
+            "data and reports the row count; the data itself never reaches you.\n"
+            "- Check the date range with two small read_file calls: the first rows, "
+            "then the last rows using an offset near the end. Use limit=5 or less.\n"
+            "- Never read the whole file, and never pass the data to write_file.\n"
+            "- Write your findings to /data/summary.md with write_file, then answer."
         ),
     )
 
-    print(f"model: {model} | blob store: {type(store).__name__}")
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": "Pull the sales data, save it, and tell me the date range and row count."}]}
+    print(f"model: {model} | blob store: {type(store).__name__} | offload threshold: {threshold:,}B\n")
+    result = run_and_trace(
+        agent, "Pull the sales data, save it, and tell me the date range and row count."
     )
 
     print("\n--- agent answer " + "-" * 50)

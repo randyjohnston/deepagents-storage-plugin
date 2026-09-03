@@ -128,8 +128,13 @@ class S3CompatibleStore(BlobStore):
         return True
 
     def delete(self, key: str) -> None:
-        # S3 DeleteObject is already idempotent (204 for missing keys).
-        self._client.delete_object(Bucket=self._bucket, Key=self._k(key))
+        # S3 DeleteObject is already idempotent (204 for missing keys), but the
+        # GCS interop endpoint returns NoSuchKey — swallow it to keep the
+        # BlobStore.delete contract the same on every provider.
+        try:
+            self._client.delete_object(Bucket=self._bucket, Key=self._k(key))
+        except self._client.exceptions.NoSuchKey:
+            pass
 
     def list(self, prefix: str) -> Iterator[BlobInfo]:
         paginator = self._client.get_paginator("list_objects_v2")

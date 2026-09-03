@@ -29,14 +29,44 @@ Azure Blob or SharePoint = one new class implementing `BlobStore`.
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
-# no credentials needed:
+# no credentials needed (these are plain scripts, not pytest tests):
 .venv/bin/python tests/test_offloading_smoke.py   # backend unit behavior
 .venv/bin/python tests/test_agent_e2e.py          # full deepagents graph, scripted model
 
-# live agent runs (configure via .env — see .env.example):
+# live agent runs need a store extra and the example extra:
+.venv/bin/pip install -e ".[s3,chat]"    # or ".[box,chat]"
+# configure via .env — see .env.example
 .venv/bin/python examples/run_agent.py   # one-shot demo
 .venv/bin/python examples/chat.py        # interactive CLI: ingest URLs, retrieve to ~/Downloads
 ```
+
+### Google Cloud Storage
+
+GCS works through `S3CompatibleStore` with
+`endpoint_url="https://storage.googleapis.com"`, with two provider-specific
+requirements:
+
+1. **HMAC credentials.** The interop endpoint rejects a service-account key
+   JSON. Create an HMAC key pair for the service account and pass it as the
+   AWS credential pair:
+
+   ```bash
+   gcloud storage hmac create SA_EMAIL --project PROJECT
+   # accessId -> AWS_ACCESS_KEY_ID, secret -> AWS_SECRET_ACCESS_KEY
+   ```
+
+2. **Disable boto3 default checksums.** boto3 >= 1.36 sends `aws-chunked`
+   CRC32 trailers on `PutObject`. GCS rejects them and reports
+   `SignatureDoesNotMatch`, so set:
+
+   ```bash
+   AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+   AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+   ```
+
+Verified against GCS: `put`, `get`, ranged `get`, `exists`, `list`,
+`delete`, presigned GET, and `sse="AES256"`. `./run.sh <example>` starts an
+example with these settings.
 
 Configuration lives in `.env` (auto-loaded): a model key (`ANTHROPIC_API_KEY`
 or `OPENAI_API_KEY`), and `BLOB_STORE=s3|box|memory` plus that provider's

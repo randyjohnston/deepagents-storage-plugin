@@ -12,6 +12,9 @@ dependencies = [
 s3 = ["boto3"]
 box = ["box-sdk-gen"]
 egnyte = ["requests"]
+# examples/chat.py: sqlite checkpointer for sessions that survive a restart,
+# plus .env loading for the store credentials.
+chat = ["langgraph-checkpoint-sqlite>=3.1,<4", "python-dotenv>=1.0"]
 dev = ["pytest"]
 
 [build-system]

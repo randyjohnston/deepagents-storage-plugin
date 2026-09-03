@@ -5,3 +5,15 @@ __pycache__/
 .chat_state.sqlite
 .chat_state.thread
 .chat_state.*
+
+# local run scripts (may reference project-specific accounts/buckets)
+*.sh
+
+# secrets — never commit
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+credentials.json
+service-account-*.json
