@@ -1,0 +1,7 @@
+.env
+.venv/
+__pycache__/
+*.egg-info/
+.chat_state.sqlite
+.chat_state.thread
+.chat_state.*
